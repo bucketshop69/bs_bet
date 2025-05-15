@@ -1,212 +1,557 @@
 import * as anchor from "@coral-xyz/anchor";
 import { Program } from "@coral-xyz/anchor";
-
+import { PublicKey, SystemProgram, Keypair } from "@solana/web3.js";
 import { assert } from "chai";
 import { BsBet } from "../target/types/bs_bet";
 
-describe("Binary Options Program - Full Points System Flow", () => {
+describe("bs_bet", () => {
+  // Configure the client to use the local cluster
   const provider = anchor.AnchorProvider.env();
   anchor.setProvider(provider);
+
   const program = anchor.workspace.BsBet as Program<BsBet>;
-  const wallet = provider.wallet;
+  const wallet = provider.wallet as anchor.Wallet;
 
-  let userProfilePDA: anchor.web3.PublicKey;
-  let userProfileBump: number;
+  // Constants
+  const INITIAL_POINTS = new anchor.BN(1000);
+  const BET_AMOUNT = new anchor.BN(100);
+  const DURATION_SECONDS = new anchor.BN(3600); // 1 hour
 
-  const solUsdPythPriceFeedDevnet = new anchor.web3.PublicKey(
-    "7UVimffxr9ow1uXYxsr4LHAcV58mLzhmwaeKvJ1pjLiE"
-  );
-  const initialPoints = new anchor.BN(1000);
+  describe("1. User Profile Initialization", () => {
+    let userProfilePda: PublicKey;
 
-  before(async () => {
-    [userProfilePDA, userProfileBump] =
-      await anchor.web3.PublicKey.findProgramAddressSync(
+    before(async () => {
+      // Derive PDA for user profile
+      [userProfilePda] = await PublicKey.findProgramAddress(
         [Buffer.from("profile"), wallet.publicKey.toBuffer()],
         program.programId
       );
-    console.log(`UserProfile PDA for wallet ${wallet.publicKey.toBase58()}: ${userProfilePDA.toBase58()}`);
+    });
 
-    // Ensure profile is created fresh or reset for a clean test run
-    console.log("Ensuring fresh user profile with initial points for test suite...");
-    try {
-      await program.methods
-        .createUserProfile()
+    it("creates a new user profile with initial points", async () => {
+      // Create user profile
+      await program.methods.createUserProfile()
         .accounts({
-          userProfile: userProfilePDA,
-          userAuthority: wallet.publicKey,
-          systemProgram: anchor.web3.SystemProgram.programId,
+          user_profile: userProfilePda,
+          user_authority: wallet.publicKey,
+          system_program: SystemProgram.programId,
         })
-        .rpc({ skipPreflight: true });
-      const profile = await program.account.userProfile.fetch(userProfilePDA);
-      console.log(`UserProfile created/accessed with ${profile.points.toString()} points. Bump: ${profile.bump}`);
-      assert.ok(profile.points.eq(initialPoints), "Profile should have initial points for test suite start.");
+        .rpc();
 
-    } catch (e) {
-      console.error("Failed to ensure fresh user profile in beforeAll:", e);
-      throw e;
-    }
-  });
+      // Fetch the created profile
+      const profile = await program.account.userProfile.fetch(userProfilePda);
 
-  it("1. Opens a new bet using user points", async () => {
-    // ... (Test 2 from your "Full Flow with Points" - it's good)
-    console.log("Test 1: Attempting to open a new bet with points...");
-    const betAccountKp = anchor.web3.Keypair.generate();
-    const assetName = "SOL/USD";
-    const direction = 1; // UP
-    const betAmountPoints = new anchor.BN(100);
-    const durationSeconds = new anchor.BN(60 * 1); // 1 minute for this test
+      // Verify profile data
+      assert.ok(profile.authority.equals(wallet.publicKey), "Profile authority should match wallet");
+      assert.ok(profile.points.eq(INITIAL_POINTS), "Profile should have initial points");
+      assert.isNumber(profile.bump, "Profile should have a bump seed");
+    });
 
-    const profileBeforeBet = await program.account.userProfile.fetch(userProfilePDA);
-    const pointsBeforeBet = profileBeforeBet.points;
-    console.log(`Points before opening bet: ${pointsBeforeBet.toString()}`);
+    it("does not reinitialize points when called twice", async () => {
+      // Get current profile state
+      const profileBefore = await program.account.userProfile.fetch(userProfilePda);
+      const pointsBefore = profileBefore.points;
 
-    assert.ok(pointsBeforeBet.gte(betAmountPoints), "Insufficient points to place bet for test setup.");
-
-    await program.methods
-      .openBet(assetName, direction, betAmountPoints, durationSeconds)
-      .accounts({
-        betAccount: betAccountKp.publicKey,
-        userSigner: wallet.publicKey,
-        userProfile: userProfilePDA,
-        pythPriceFeed: solUsdPythPriceFeedDevnet,
-        systemProgram: anchor.web3.SystemProgram.programId,
-      })
-      .signers([betAccountKp])
-      .rpc({ skipPreflight: true });
-
-    console.log(`Bet opened successfully! Bet Account: ${betAccountKp.publicKey.toBase58()}`);
-    const profileAfterBet = await program.account.userProfile.fetch(userProfilePDA);
-    const expectedPointsAfterBet = pointsBeforeBet.sub(betAmountPoints);
-    assert.ok(profileAfterBet.points.eq(expectedPointsAfterBet), `Points deduction failed. Expected ${expectedPointsAfterBet}, got ${profileAfterBet.points}`);
-    console.log(`Points after opening bet: ${profileAfterBet.points.toString()}`);
-    // ... other assertions for createdBet ...
-  });
-
-  it("2. Fails to open a bet with insufficient points", async () => {
-    console.log("Test 2: Attempting to open bet with insufficient points...");
-    const betAccountKp = anchor.web3.Keypair.generate();
-    const assetName = "SOL/USD";
-    const direction = 0; // DOWN
-
-    // Fetch current points
-    const profileData = await program.account.userProfile.fetch(userProfilePDA);
-    console.log(`Current points for profile ${userProfilePDA.toBase58()}: ${profileData.points.toString()}`);
-
-    // This is the amount that *should* trigger InsufficientPoints
-    const amountToBetThatIsTooHigh = profileData.points.add(new anchor.BN(1));
-    console.log(`Attempting to bet an amount that is too high: ${amountToBetThatIsTooHigh.toString()}`);
-
-    const durationSeconds = new anchor.BN(60);
-
-    try {
-      console.log("Test 2: Preparing to call openBet with excessive amount...");
-      await program.methods
-        .openBet(assetName, direction, amountToBetThatIsTooHigh, durationSeconds) // Using the amount that should fail
+      // Call create_user_profile again
+      await program.methods.createUserProfile()
         .accounts({
-          betAccount: betAccountKp.publicKey,
+          user_profile: userProfilePda,
+          user_authority: wallet.publicKey,
+          system_program: SystemProgram.programId,
+        })
+        .rpc();
+
+      // Fetch profile again
+      const profileAfter = await program.account.userProfile.fetch(userProfilePda);
+
+      // Verify points haven't changed
+      assert.ok(profileAfter.points.eq(pointsBefore), "Points should not be reinitialized");
+      assert.ok(profileAfter.authority.equals(wallet.publicKey), "Authority should remain the same");
+    });
+
+    it("verifies profile authority matches signer", async () => {
+      const profile = await program.account.userProfile.fetch(userProfilePda);
+
+      // Verify authority matches the wallet that created it
+      assert.ok(
+        profile.authority.equals(wallet.publicKey),
+        "Profile authority should match the signer's public key"
+      );
+    });
+  });
+
+  describe("2. Bet Opening", () => {
+    let userProfilePda: PublicKey;
+    let userAuthStatePda: PublicKey;
+    let betAccount: Keypair;
+    let pythPriceFeed: PublicKey;
+
+    before(async () => {
+      // Derive PDAs
+      [userProfilePda] = await PublicKey.findProgramAddress(
+        [Buffer.from("profile"), wallet.publicKey.toBuffer()],
+        program.programId
+      );
+      [userAuthStatePda] = await PublicKey.findProgramAddress(
+        [Buffer.from("auth_state"), wallet.publicKey.toBuffer()],
+        program.programId
+      );
+
+      // Create user profile if it doesn't exist
+      try {
+        await program.methods.createUserProfile()
+          .accounts({
+            user_profile: userProfilePda,
+            user_authority: wallet.publicKey,
+            system_program: SystemProgram.programId,
+          })
+          .rpc();
+      } catch (e) {
+        // Profile might already exist, which is fine
+      }
+
+      // Initialize auth state
+      try {
+        await program.methods.manageDelegation(
+          1, // delegation_action = 1 for verify signature and prepare for delegation
+          Buffer.from("BSBET_DELEGATE_AUTH:" + wallet.publicKey.toBase58() + ":0"), // user_signed_message
+          new Uint8Array(64) // signature (empty for testing)
+        )
+          .accounts({
+            user_auth_state: userAuthStatePda,
+            user_authority: wallet.publicKey,
+            system_program: SystemProgram.programId,
+            magic_program: null,
+            magic_context: null,
+            ix_sysvar: anchor.web3.SYSVAR_INSTRUCTIONS_PUBKEY,
+            ed25519_program: anchor.web3.ED25519_PROGRAM_ID,
+          })
+          .rpc();
+      } catch (e) {
+        // Auth state might already be initialized, which is fine
+      }
+
+      // Get Pyth price feed address
+      pythPriceFeed = new PublicKey("7UVimffxr9ow1uXYxsr4LHAcV58mLzhmwaeKvJ1pjLiE");
+    });
+
+    it("opens a UP bet with valid parameters", async () => {
+      // Generate a new keypair for the bet account
+      betAccount = Keypair.generate();
+
+      // Open UP bet (direction = 1)
+      await program.methods.openBet(
+        "SOL/USD",
+        1, // UP direction
+        BET_AMOUNT,
+        DURATION_SECONDS,
+        wallet.publicKey
+      )
+        .accounts({
+          betAccount: betAccount.publicKey,
           userSigner: wallet.publicKey,
-          userProfile: userProfilePDA,
-          pythPriceFeed: solUsdPythPriceFeedDevnet,
-          systemProgram: anchor.web3.SystemProgram.programId,
+          userAuthState: userAuthStatePda,
+          user_profile: userProfilePda,
+          pythPriceFeed: pythPriceFeed,
+          systemProgram: SystemProgram.programId,
         })
-        .signers([betAccountKp])
-        .rpc({ skipPreflight: false }); // Changed to skipPreflight: false for more RPC checks
+        .signers([betAccount])
+        .rpc();
 
-      assert.fail("Bet opening should have failed due to insufficient points.");
+      // Fetch the created bet
+      const bet = await program.account.activeBet.fetch(betAccount.publicKey);
 
-    } catch (error: any) {
-      // --- Keep the detailed error logging from before ---
-      console.log("--- Test 2: Raw Error Object ---");
-      console.log("error:", error);
-      console.log("error.name:", error.name);
-      console.log("error.message:", error.message);
-      console.log("error.stack:", error.stack);
-      if (error.error) {
-        console.log("error.error (Anchor specific):", error.error);
-        if (error.error.errorCode) {
-          console.log("error.error.errorCode.code:", error.error.errorCode.code);
-          console.log("error.error.errorCode.number:", error.error.errorCode.number);
-        }
-        console.log("error.error.errorMessage:", error.error.errorMessage);
+      // Verify bet data
+      assert.ok(bet.user.equals(wallet.publicKey), "Bet user should match wallet");
+      assert.equal(bet.assetName, "SOL/USD", "Asset name should be SOL/USD");
+      assert.equal(bet.direction, 1, "Direction should be UP (1)");
+      assert.ok(bet.amountStaked.eq(BET_AMOUNT), "Amount staked should match");
+      assert.ok(bet.status.eq(new anchor.BN(0)), "Status should be active (0)");
+    });
+
+    it("opens a DOWN bet with valid parameters", async () => {
+      // Generate a new keypair for the bet account
+      betAccount = Keypair.generate();
+
+      // Open DOWN bet (direction = 0)
+      await program.methods.openBet(
+        "SOL/USD",
+        0, // DOWN direction
+        BET_AMOUNT,
+        DURATION_SECONDS,
+        wallet.publicKey
+      )
+        .accounts({
+          betAccount: betAccount.publicKey,
+          userSigner: wallet.publicKey,
+          userAuthState: userAuthStatePda,
+          user_profile: userProfilePda,
+          pythPriceFeed: pythPriceFeed,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([betAccount])
+        .rpc();
+
+      // Fetch the created bet
+      const bet = await program.account.activeBet.fetch(betAccount.publicKey);
+
+      // Verify bet data
+      assert.ok(bet.user.equals(wallet.publicKey), "Bet user should match wallet");
+      assert.equal(bet.assetName, "SOL/USD", "Asset name should be SOL/USD");
+      assert.equal(bet.direction, 0, "Direction should be DOWN (0)");
+      assert.ok(bet.amountStaked.eq(BET_AMOUNT), "Amount staked should match");
+      assert.ok(bet.status.eq(new anchor.BN(0)), "Status should be active (0)");
+    });
+
+    it("fails with unsupported asset", async () => {
+      betAccount = Keypair.generate();
+
+      try {
+        await program.methods.openBet(
+          "BTC/USD", // Unsupported asset
+          1,
+          BET_AMOUNT,
+          DURATION_SECONDS,
+          wallet.publicKey
+        )
+          .accounts({
+            betAccount: betAccount.publicKey,
+            userSigner: wallet.publicKey,
+            userAuthState: userAuthStatePda,
+            user_profile: userProfilePda,
+            pythPriceFeed: pythPriceFeed,
+            systemProgram: SystemProgram.programId,
+          })
+          .signers([betAccount])
+          .rpc();
+        assert.fail("Should have thrown an error for unsupported asset");
+      } catch (e) {
+        assert.include(e.message, "UnsupportedAsset");
       }
-      if (error.logs) {
-        console.log("error.logs:", error.logs.join('\n'));
+    });
+
+    it("fails with invalid direction", async () => {
+      betAccount = Keypair.generate();
+
+      try {
+        await program.methods.openBet(
+          "SOL/USD",
+          2, // Invalid direction (must be 0 or 1)
+          BET_AMOUNT,
+          DURATION_SECONDS,
+          wallet.publicKey
+        )
+          .accounts({
+            betAccount: betAccount.publicKey,
+            userSigner: wallet.publicKey,
+            userAuthState: userAuthStatePda,
+            user_profile: userProfilePda,
+            pythPriceFeed: pythPriceFeed,
+            systemProgram: SystemProgram.programId,
+          })
+          .signers([betAccount])
+          .rpc();
+        assert.fail("Should have thrown an error for invalid direction");
+      } catch (e) {
+        assert.include(e.message, "InvalidDirection");
       }
-      console.log("--- End Test 2: Raw Error Object ---");
+    });
 
-      const expectedErrorMessageSubstring = "User does not have enough points for this bet.";
-      const expectedErrorCodeString = "InsufficientPoints";
-      const expectedRawErrorCode = "0x1779";
+    it("fails with zero amount", async () => {
+      betAccount = Keypair.generate();
 
-      let foundError = false;
-      if (error.message && error.message.includes(expectedErrorMessageSubstring)) { foundError = true; }
-      else if (error.message && error.message.includes(expectedRawErrorCode)) { foundError = true; }
-      else if (error.error && error.error.errorCode && error.error.errorCode.code === expectedErrorCodeString) { foundError = true; }
-      else if (error.toString().includes(expectedErrorMessageSubstring)) { foundError = true; }
+      try {
+        await program.methods.openBet(
+          "SOL/USD",
+          1,
+          new anchor.BN(0), // Zero amount
+          DURATION_SECONDS,
+          wallet.publicKey
+        )
+          .accounts({
+            betAccount: betAccount.publicKey,
+            userSigner: wallet.publicKey,
+            userAuthState: userAuthStatePda,
+            user_profile: userProfilePda,
+            pythPriceFeed: pythPriceFeed,
+            systemProgram: SystemProgram.programId,
+          })
+          .signers([betAccount])
+          .rpc();
+        assert.fail("Should have thrown an error for zero amount");
+      } catch (e) {
+        assert.include(e.message, "ZeroAmount");
+      }
+    });
 
-      assert.isTrue(foundError, `The error thrown was not 'InsufficientPoints'. Captured error message: '${error.message}'`);
-    }
+    it("fails with invalid duration", async () => {
+      betAccount = Keypair.generate();
+
+      try {
+        await program.methods.openBet(
+          "SOL/USD",
+          1,
+          BET_AMOUNT,
+          new anchor.BN(0), // Invalid duration (must be positive)
+          wallet.publicKey
+        )
+          .accounts({
+            betAccount: betAccount.publicKey,
+            userSigner: wallet.publicKey,
+            userAuthState: userAuthStatePda,
+            user_profile: userProfilePda,
+            pythPriceFeed: pythPriceFeed,
+            systemProgram: SystemProgram.programId,
+          })
+          .signers([betAccount])
+          .rpc();
+        assert.fail("Should have thrown an error for invalid duration");
+      } catch (e) {
+        assert.include(e.message, "InvalidDuration");
+      }
+    });
+
+    it("fails with insufficient points", async () => {
+      betAccount = Keypair.generate();
+
+      try {
+        await program.methods.openBet(
+          "SOL/USD",
+          1,
+          new anchor.BN(2000), // More than initial points
+          DURATION_SECONDS,
+          wallet.publicKey
+        )
+          .accounts({
+            betAccount: betAccount.publicKey,
+            userSigner: wallet.publicKey,
+            userAuthState: userAuthStatePda,
+            user_profile: userProfilePda,
+            pythPriceFeed: pythPriceFeed,
+            systemProgram: SystemProgram.programId,
+          })
+          .signers([betAccount])
+          .rpc();
+        assert.fail("Should have thrown an error for insufficient points");
+      } catch (e) {
+        assert.include(e.message, "InsufficientPoints");
+      }
+    });
   });
 
-  it("3. Successfully resolves an expired bet and updates points", async () => {
-    console.log("Test 3: Attempting to resolve a bet and update points...");
-    let profile = await program.account.userProfile.fetch(userProfilePDA);
-    const pointsBeforeOpeningResolveTestBet = profile.points;
+  describe("3. Bet Resolution", () => {
+    let userProfilePda: PublicKey;
+    let userAuthStatePda: PublicKey;
+    let betAccount: Keypair;
+    let pythPriceFeed: PublicKey;
 
-    const resolveTestBetKp = anchor.web3.Keypair.generate();
-    const betAmountForResolve = new anchor.BN(Math.min(50, pointsBeforeOpeningResolveTestBet.toNumber())); // Bet 50 or available points
-    if (betAmountForResolve.lten(0)) {
-      console.log("Skipping resolve test as user has no points to make a bet.");
-      return; // Skip test if no points
-    }
+    before(async () => {
+      // Derive PDAs
+      [userProfilePda] = await PublicKey.findProgramAddress(
+        [Buffer.from("profile"), wallet.publicKey.toBuffer()],
+        program.programId
+      );
+      [userAuthStatePda] = await PublicKey.findProgramAddress(
+        [Buffer.from("auth_state"), wallet.publicKey.toBuffer()],
+        program.programId
+      );
 
-    const assetForResolve = "SOL/USD";
-    const directionForResolve = 1; // Bet UP
-    const shortDuration = new anchor.BN(15);
+      // Create user profile if it doesn't exist
+      try {
+        await program.methods.createUserProfile()
+          .accounts({
+            user_profile: userProfilePda,
+            user_authority: wallet.publicKey,
+            system_program: SystemProgram.programId,
+          })
+          .rpc();
+      } catch (e) {
+        // Profile might already exist, which is fine
+      }
 
-    console.log(`Opening bet for resolution: Amount=${betAmountForResolve}, UserPointsBeforeThisBet=${pointsBeforeOpeningResolveTestBet}`);
-    await program.methods
-      .openBet(assetForResolve, directionForResolve, betAmountForResolve, shortDuration)
-      .accounts({
-        betAccount: resolveTestBetKp.publicKey, // Ensure this line is correct
-        userSigner: wallet.publicKey,          // Ensure this line is correct
-        userProfile: userProfilePDA,
-        pythPriceFeed: solUsdPythPriceFeedDevnet,
-        systemProgram: anchor.web3.SystemProgram.programId, // <<< CORRECTED
-      })
-      .signers([resolveTestBetKp])
-      .rpc({ skipPreflight: true });
+      // Initialize auth state
+      try {
+        await program.methods.manageDelegation(
+          1, // delegation_action = 1 for verify signature and prepare for delegation
+          Buffer.from("BSBET_DELEGATE_AUTH:" + wallet.publicKey.toBase58() + ":0"), // user_signed_message
+          new Uint8Array(64) // signature (empty for testing)
+        )
+          .accounts({
+            user_auth_state: userAuthStatePda,
+            user_authority: wallet.publicKey,
+            system_program: SystemProgram.programId,
+            magic_program: null,
+            magic_context: null,
+            ix_sysvar: anchor.web3.SYSVAR_INSTRUCTIONS_PUBKEY,
+            ed25519_program: anchor.web3.ED25519_PROGRAM_ID,
+          })
+          .rpc();
+      } catch (e) {
+        // Auth state might already be initialized, which is fine
+      }
 
-    const profileAfterOpeningBetForResolve = await program.account.userProfile.fetch(userProfilePDA);
-    console.log(`Points after opening bet for resolve: ${profileAfterOpeningBetForResolve.points.toString()}`);
+      // Get Pyth price feed address
+      pythPriceFeed = new PublicKey("7UVimffxr9ow1uXYxsr4LHAcV58mLzhmwaeKvJ1pjLiE");
+    });
 
-    console.log(`Waiting ${shortDuration.toNumber() + 5} seconds for bet to expire...`);
-    await new Promise(resolve => setTimeout(resolve, (shortDuration.toNumber() + 5) * 1000));
+    it("resolves a winning UP bet correctly", async () => {
+      // Generate a new keypair for the bet account
+      betAccount = Keypair.generate();
 
-    await program.methods
-      .resolveBet()
-      .accounts({
-        betAccount: resolveTestBetKp.publicKey,
-        user: wallet.publicKey,
-        userProfile: userProfilePDA,
-        pythPriceFeed: solUsdPythPriceFeedDevnet,
-        clock: anchor.web3.SYSVAR_CLOCK_PUBKEY,
-      })
-      .rpc({ skipPreflight: true });
+      // Open UP bet
+      await program.methods.openBet(
+        "SOL/USD",
+        1, // UP direction
+        BET_AMOUNT,
+        DURATION_SECONDS,
+        wallet.publicKey
+      )
+        .accounts({
+          betAccount: betAccount.publicKey,
+          userSigner: wallet.publicKey,
+          userAuthState: userAuthStatePda,
+          user_profile: userProfilePda,
+          pythPriceFeed: pythPriceFeed,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([betAccount])
+        .rpc();
 
-    const resolvedBet = await program.account.activeBet.fetch(resolveTestBetKp.publicKey);
-    const profileAfterResolve = await program.account.userProfile.fetch(userProfilePDA);
-    // ... (rest of your assertions for points update based on win/loss) ...
-    console.log(`Bet resolved! Status: ${resolvedBet.status}, Final Points: ${profileAfterResolve.points.toString()}`);
-    assert.oneOf(resolvedBet.status, [1, 2], "Bet status should be ResolvedWon or ResolvedLost");
-    if (resolvedBet.status === 1) { // Won
-      const expectedPointsOnWin = profileAfterOpeningBetForResolve.points.add(betAmountForResolve.mul(new anchor.BN(2)));
-      assert.ok(profileAfterResolve.points.eq(expectedPointsOnWin), `Points mismatch on WIN. Expected ${expectedPointsOnWin}, got ${profileAfterResolve.points}`);
-    } else { // Lost
-      const expectedPointsOnLoss = profileAfterOpeningBetForResolve.points;
-      assert.ok(profileAfterResolve.points.eq(expectedPointsOnLoss), `Points mismatch on LOSS. Expected ${expectedPointsOnLoss}, got ${profileAfterResolve.points}`);
-    }
+      // Get initial profile state
+      const profileBefore = await program.account.userProfile.fetch(userProfilePda);
+      const pointsBefore = new anchor.BN(profileBefore.points);
+
+      // Wait for bet to expire
+      await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1 second
+
+      // Resolve the bet
+      await program.methods.resolveBet()
+        .accounts({
+          betAccount: betAccount.publicKey,
+          resolverSigner: wallet.publicKey,
+          userAuthState: userAuthStatePda,
+          user_profile: userProfilePda,
+          pythPriceFeed: pythPriceFeed,
+          clock: anchor.web3.SYSVAR_CLOCK_PUBKEY,
+          systemProgram: SystemProgram.programId,
+        })
+        .rpc();
+
+      // Fetch the resolved bet
+      const bet = await program.account.activeBet.fetch(betAccount.publicKey);
+      const profileAfter = await program.account.userProfile.fetch(userProfilePda);
+      const pointsAfter = new anchor.BN(profileAfter.points);
+
+      // Verify bet was resolved
+      assert.ok(bet.status === 1 || bet.status === 2, "Bet should be resolved");
+      assert.ok(bet.resolvedPrice > 0, "Resolved price should be set");
+
+      // If bet was won (status 1), verify points were doubled
+      if (bet.status === 1) {
+        assert.ok(pointsAfter.eq(pointsBefore.add(BET_AMOUNT)), "Points should be doubled for winning bet");
+      } else {
+        assert.ok(pointsAfter.eq(pointsBefore), "Points should remain unchanged for losing bet");
+      }
+    });
+
+    it("fails to resolve an active bet before expiry", async () => {
+      // Generate a new keypair for the bet account
+      betAccount = Keypair.generate();
+
+      // Open a bet with longer duration
+      await program.methods.openBet(
+        "SOL/USD",
+        1,
+        BET_AMOUNT,
+        new anchor.BN(3600), // 1 hour duration
+        wallet.publicKey
+      )
+        .accounts({
+          betAccount: betAccount.publicKey,
+          userSigner: wallet.publicKey,
+          userAuthState: userAuthStatePda,
+          user_profile: userProfilePda,
+          pythPriceFeed: pythPriceFeed,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([betAccount])
+        .rpc();
+
+      try {
+        // Try to resolve immediately
+        await program.methods.resolveBet()
+          .accounts({
+            betAccount: betAccount.publicKey,
+            resolverSigner: wallet.publicKey,
+            userAuthState: userAuthStatePda,
+            user_profile: userProfilePda,
+            pythPriceFeed: pythPriceFeed,
+            clock: anchor.web3.SYSVAR_CLOCK_PUBKEY,
+            systemProgram: SystemProgram.programId,
+          })
+          .rpc();
+        assert.fail("Should have thrown an error for premature resolution");
+      } catch (e) {
+        assert.include(e.message, "BetNotYetExpired");
+      }
+    });
+
+    it("fails to resolve an already resolved bet", async () => {
+      // Generate a new keypair for the bet account
+      betAccount = Keypair.generate();
+
+      // Open a bet with short duration
+      await program.methods.openBet(
+        "SOL/USD",
+        1,
+        BET_AMOUNT,
+        new anchor.BN(1), // 1 second duration
+        wallet.publicKey
+      )
+        .accounts({
+          betAccount: betAccount.publicKey,
+          userSigner: wallet.publicKey,
+          userAuthState: userAuthStatePda,
+          user_profile: userProfilePda,
+          pythPriceFeed: pythPriceFeed,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([betAccount])
+        .rpc();
+
+      // Wait for bet to expire
+      await new Promise(resolve => setTimeout(resolve, 1000));
+
+      // First resolution
+      await program.methods.resolveBet()
+        .accounts({
+          betAccount: betAccount.publicKey,
+          resolverSigner: wallet.publicKey,
+          userAuthState: userAuthStatePda,
+          user_profile: userProfilePda,
+          pythPriceFeed: pythPriceFeed,
+          clock: anchor.web3.SYSVAR_CLOCK_PUBKEY,
+          systemProgram: SystemProgram.programId,
+        })
+        .rpc();
+
+      try {
+        // Try to resolve again
+        await program.methods.resolveBet()
+          .accounts({
+            betAccount: betAccount.publicKey,
+            resolverSigner: wallet.publicKey,
+            userAuthState: userAuthStatePda,
+            user_profile: userProfilePda,
+            pythPriceFeed: pythPriceFeed,
+            clock: anchor.web3.SYSVAR_CLOCK_PUBKEY,
+            systemProgram: SystemProgram.programId,
+          })
+          .rpc();
+        assert.fail("Should have thrown an error for double resolution");
+      } catch (e) {
+        assert.include(e.message, "BetNotActiveOrAlreadyResolved");
+      }
+    });
   });
-
-
 });
