@@ -1,18 +1,18 @@
-import React, { useEffect, useState, useCallback, useRef } from "react"; // Added useRef
+import React, { useEffect, useState, useCallback, useRef } from "react";
 import UserProfile from "./UserProfile";
 import * as anchor from '@coral-xyz/anchor';
-import { Program, AnchorProvider, Wallet } from '@coral-xyz/anchor'; // Import types
+import { Program, AnchorProvider, Wallet } from '@coral-xyz/anchor';
 import idlJson from './bs_bet.json';
 import type { BsBet } from './bs_bet';
 import { BN } from "@coral-xyz/anchor";
-import { Connection as SolanaConnection, PublicKey, SystemProgram, Keypair } from "@solana/web3.js"; // Keypair for providerWallet
+import { Connection as SolanaConnection, PublicKey, SystemProgram, Keypair, Transaction } from "@solana/web3.js";
 import { useSolanaWallet } from "../hooks/useSolanaWallet";
 import { signAndFormatMessage } from "../utils/signUtils";
 
 interface CivicWallet {
     publicKey: PublicKey;
-    signTransaction: (transaction: any) => Promise<any>;
-    signAllTransactions: (transactions: any[]) => Promise<any[]>;
+    signTransaction: (transaction: Transaction) => Promise<Transaction>;
+    signAllTransactions: (transactions: Transaction[]) => Promise<Transaction[]>;
     signMessage: (message: Uint8Array) => Promise<Uint8Array>;
 }
 
@@ -110,8 +110,8 @@ export default function BetForm() {
 
     const [userProfilePda, setUserProfilePda] = useState<PublicKey | null>(null);
     const [userAuthStatePda, setUserAuthStatePda] = useState<PublicKey | null>(null);
-    const [profileData, setProfileData] = useState<any>(null);
-    const [authStateData, setAuthStateData] = useState<any>(null);
+    const [profileData, setProfileData] = useState<Record<string, unknown> | null>(null);
+    const [authStateData, setAuthStateData] = useState<Record<string, unknown> | null>(null);
     const [displayableBets, setDisplayableBets] = useState<DisplayableActiveBet[]>([]);
 
     const userPoints = profileData ? Number(profileData.points) : 1000;
@@ -132,7 +132,7 @@ export default function BetForm() {
             const newL1Provider = new AnchorProvider(standardConnection, providerWallet, AnchorProvider.defaultOptions());
             setL1Provider(newL1Provider);
             if (idlJson) {
-                const newL1Program = new Program(idlJson as any, newL1Provider) as Program<BsBet>;
+                const newL1Program = new Program(idlJson, newL1Provider) as Program<BsBet>;
                 setL1Program(newL1Program);
                 console.log("L1 Program client created.");
             }
@@ -144,7 +144,7 @@ export default function BetForm() {
 
     // --- NEW: Effect for Ephemeral Provider & Program ---
     useEffect(() => {
-        if (userWallet && userAuthority && idlJson) {
+        if (userWallet && userAuthority) {
             if (ephemeralProviderRef.current && ephemeralProviderRef.current.connection.rpcEndpoint === MAGICBLOCK_RPC_ENDPOINT) {
                 // If already initialized with the same endpoint, and program exists, do nothing
                 if (ephemeralProgram) return;
@@ -161,14 +161,14 @@ export default function BetForm() {
             const newEphemeralProvider = new AnchorProvider(ephemeralSolanaConnection, ephemeralWallet, AnchorProvider.defaultOptions());
             ephemeralProviderRef.current = newEphemeralProvider; // Store in ref
 
-            const newEphemeralProgram = new Program(idlJson as any, newEphemeralProvider) as Program<BsBet>;
+            const newEphemeralProgram = new Program(idlJson, newEphemeralProvider) as Program<BsBet>;
             setEphemeralProgram(newEphemeralProgram);
             console.log("Ephemeral Program client created for MagicBlock RPC.");
         } else {
             ephemeralProviderRef.current = null;
             setEphemeralProgram(null);
         }
-    }, [userWallet, userAuthority, idlJson]);
+    }, [userWallet, userAuthority, ephemeralProgram]);
 
     // Effect for PDA Derivation (uses L1 program, as PDAs are on L1)
     useEffect(() => {
@@ -185,39 +185,62 @@ export default function BetForm() {
                 );
                 setUserAuthStatePda(authStatePdaRet);
                 setActionFeedbackMessage('PDAs derived.');
-            } catch (error: any) { /* ... */ }
+            } catch (error) {
+                console.error("Error deriving PDAs:", error);
+            }
         } else { /* ... clear PDAs ... */ }
     }, [l1Program, userAuthority, userWallet]);
 
     // Fetch functions use L1 program to get ground truth state
     const fetchUserProfileData = useCallback(async () => {
         if (!l1Program || !userProfilePda) return;
-        try { const data = await l1Program.account.userProfile.fetch(userProfilePda); setProfileData(data); }
-        catch (e) { setProfileData(null); console.warn("Fetch profile L1 error", e); }
+        try {
+            const data = await l1Program.account.userProfile.fetch(userProfilePda);
+            setProfileData(data);
+        }
+        catch (e) {
+            setProfileData(null);
+            console.warn("Fetch profile L1 error", e);
+        }
     }, [l1Program, userProfilePda]);
 
     const fetchUserAuthStateData = useCallback(async () => {
         if (!l1Program || !userAuthStatePda) return;
-        try { const data = await l1Program.account.userAuthState.fetch(userAuthStatePda); setAuthStateData(data); }
-        catch (e) { setAuthStateData(null); console.warn("Fetch auth L1 error", e); }
+        try {
+            const data = await l1Program.account.userAuthState.fetch(userAuthStatePda);
+            setAuthStateData(data);
+        }
+        catch (e) {
+            setAuthStateData(null);
+            console.warn("Fetch auth L1 error", e);
+        }
     }, [l1Program, userAuthStatePda]);
 
     useEffect(() => { // Auto-fetch
-        if (userProfilePda && l1Program) fetchUserProfileData();
-        if (userAuthStatePda && l1Program) fetchUserAuthStateData();
+        if (userProfilePda && l1Program) {
+            fetchUserProfileData();
+        }
+        if (userAuthStatePda && l1Program) {
+            fetchUserAuthStateData();
+        }
     }, [userProfilePda, userAuthStatePda, l1Program, fetchUserProfileData, fetchUserAuthStateData]);
 
     const handleCreateUserProfile = useCallback(async () => {
         if (!l1Program || !userAuthority || !userProfilePda || !userAuthStatePda) return;
-        setLoading(true); /* ... */
+        setLoading(true);
         try {
             await l1Program.methods.createUserProfile().accounts({
                 userProfile: userProfilePda,
                 userAuthStateForProfileCreation: userAuthStatePda,
-                userAuthority: userAuthority, systemProgram: SystemProgram.programId,
-            } as any).rpc();
+                userAuthority: userAuthority,
+                systemProgram: SystemProgram.programId,
+            }).rpc();
             /* ... fetch data ... */
-        } catch (e: any) { /* ... */ } finally { setLoading(false); }
+        } catch (err) {
+            console.error("Error creating user profile:", err);
+        } finally {
+            setLoading(false);
+        }
     }, [l1Program, userAuthority, userProfilePda, userAuthStatePda, fetchUserProfileData, fetchUserAuthStateData]);
 
     const fetchAndDisplayActiveBets = useCallback(async () => { /* uses l1Program */
@@ -226,8 +249,6 @@ export default function BetForm() {
     }, [l1Program, userAuthority]);
 
     useEffect(() => { if (l1Program && userAuthority) fetchAndDisplayActiveBets(); }, [l1Program, userAuthority, fetchAndDisplayActiveBets]);
-
-    // In BetForm.tsx
 
     // MagicBlock Delegation Program ID
     const MAGICBLOCK_DELEGATION_PROGRAM_ID = new anchor.web3.PublicKey(
@@ -363,8 +384,6 @@ export default function BetForm() {
         }
     };
 
-    // In BetForm.tsx
-
     const handleUndelegate = async () => {
         if (!l1Program || !userAuthority || !userAuthStatePda) {
             setActionFeedbackMessage("Wallet/Program not ready for disabling Quick Bets."); setLoading(false); return;
@@ -494,8 +513,6 @@ export default function BetForm() {
         }
         finally { setLoading(false); }
     };
-
-    // In BetForm.tsx's return statement:
 
     return (
         <div className="bg-gray-900 p-6 rounded-lg shadow-lg w-full max-w-xs flex flex-col items-center justify-between h-full min-h-[350px]">

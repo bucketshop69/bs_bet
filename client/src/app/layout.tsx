@@ -4,12 +4,15 @@ import Navbar from "../components/Navbar";
 import '@solana/wallet-adapter-react-ui/styles.css';
 import PriceTracker from "../components/PriceTracker";
 import BetForm from "../components/BetForm";
+// Import Tailwind styles
+import '../styles/globals.css';
+
 function Layout({ children }: { children: React.ReactNode }) {
 
   return (
     <html lang="en">
       <head>
-        <script src="https://cdn.tailwindcss.com"></script>
+        {/* Removed synchronous script */}
       </head>
       <body className="bg-gray-800 min-h-screen text-gray-100">
         <CivicAuthProvider>
