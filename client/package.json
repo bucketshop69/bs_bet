@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@civic/auth": "^0.5.5",
+    "@pythnetwork/hermes-client": "^2.0.0",
     "@solana/wallet-adapter-base": "^0.9.26",
     "@solana/wallet-adapter-react": "^0.15.38",
     "@solana/wallet-adapter-react-ui": "^0.9.38",
