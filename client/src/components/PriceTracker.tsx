@@ -4,7 +4,7 @@ import { HermesClient } from "@pythnetwork/hermes-client";
 // SOL/USD price feed ID (mainnet-beta, hex format)
 const SOL_USD_PRICE_ID = "0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d";
 const CHART_WIDTH = 600;
-const CHART_HEIGHT = 250;
+const CHART_HEIGHT = 400;
 const CHART_PADDING = 40;
 
 export default function PriceTracker() {
